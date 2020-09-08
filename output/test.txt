@@ -1,0 +1,1 @@
+./minimap2 -a -t 8 --fileprefix=./output/fileprefix_  test/chr1.mmi test/num10304.fastq
