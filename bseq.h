@@ -16,7 +16,7 @@ typedef struct {
 	char *name, *seq, *qual, *comment;
 } mm_bseq1_t;
 
-mm_bseq_file_t *mm_bseq_open(const char *fn);
+mm_bseq_file_t *mm_bseq_open(const char *fn,int flag);
 void mm_bseq_close(mm_bseq_file_t *fp);
 mm_bseq1_t *mm_bseq_read3(mm_bseq_file_t *fp, int64_t chunk_size, int with_qual, int with_comment, int frag_mode, int *n_);
 mm_bseq1_t *mm_bseq_read2(mm_bseq_file_t *fp, int64_t chunk_size, int with_qual, int frag_mode, int *n_);

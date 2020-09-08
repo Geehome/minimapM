@@ -7,6 +7,7 @@
 #endif
 #include <fcntl.h>
 #include <stdio.h>
+#include <mpi.h>
 #define __STDC_LIMIT_MACROS
 #include "kthread.h"
 #include "bseq.h"
@@ -15,6 +16,7 @@
 #include "kvec.h"
 #include "khash.h"
 
+#define SEQ_NAME_LEN 50
 #define idx_hash(a) ((a)>>1)
 #define idx_eq(a, b) ((a)>>1 == (b)>>1)
 KHASH_INIT(idx, uint64_t, uint64_t, 1, idx_hash, idx_eq)
@@ -41,6 +43,370 @@ typedef struct mm_idx_intv_s {
 	mm_idx_intv1_t *a;
 } mm_idx_intv_t;
 
+/*@brief：广播索引
+ *@param  mm_idx_t mi
+ *@return mi 
+ *@author Geehome  
+ */
+mm_idx_t * mm_idx_bcast(mm_idx_t *mi)
+{
+	int rank=0;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	//开始处理索引
+	long long int castInt[14];								   //传mi的值变量和各种计数器
+	int nSeq = 0;											   //mi->n_seq的值
+	int tempI = 0, tempJ = 0, tempP = 0, tempH = 0, tempF = 0; //临时的计数变量
+
+	char *seqName;		 //mi->seq[i].name
+	uint64_t *seqOffset; //mi->seq[i].offset
+	uint32_t *seqLen;	 //mi->seq[i].len
+
+	uint32_t *castS; //mi->S
+	uint64_t sum_len = 0; //mi->S的size
+
+	int mib = 0; //1U<<mi->b;
+
+	int pCount = 0, pSize = 0; //为了减少广播数组占用的内存，只广播那些有值的部分
+	int *pst;				   //统计有值的下标
+	int32_t *miBn;			   //mi->B[i].n
+	uint64_t *miBp;			   //mi->B[i].p
+
+	long long int hCount = 0, hSize = 0, flagSize = 0; //为了减少广播数组占用的内存，只广播那些有值的部分
+	int(*flagSt)[2] = 0;							   //记录flag的i,j下标
+	int *hst;										   //统计有值的下标
+	int(*miBhCon)[4];								   //mi->B[i].h的值变量
+	khint32_t *miBhFlags;
+	uint64_t(*miBhHash)[2];
+
+	// open index reader
+	if (rank == 0)
+	{
+		castInt[0] = mi->b;
+		castInt[1] = mi->w;
+		castInt[2] = mi->k;
+		castInt[3] = mi->flag;
+		castInt[4] = mi->n_seq;
+		castInt[5] = mi->index;
+        castInt[6] = mi->n_alt;
+
+		nSeq = mi->n_seq;
+		for (tempI = 0; tempI < nSeq; tempI++)
+			sum_len += mi->seq[tempI].len;
+
+		sum_len = (sum_len + 7) / 8;
+		castInt[7] = sum_len;
+
+		mib = 1U << mi->b;
+		for (tempI = 0; tempI < mib; tempI++)
+		{
+			idxhash_t *h = (idxhash_t *)mi->B[tempI].h;
+			if (mi->B[tempI].n != 0)
+			{
+				pCount++;
+				for (tempJ = 0; tempJ < mi->B[tempI].n; tempJ++)
+					pSize++;
+			}
+
+			if (h == 0)
+				continue;
+
+			hCount++;
+
+			tempF = (h->n_buckets) < 16 ? 1 : (h->n_buckets) >> 4;
+			for (tempJ = 0; tempJ < tempF; tempJ++)
+			{
+				if (h->flags[tempJ])
+					flagSize++; //统计flags有值的个数
+			}
+			for (tempJ = 0; tempJ < kh_end(h); tempJ++)
+			{ //h指针
+				if (kh_exist(h, tempJ))
+					hSize++;
+			}
+		}
+		castInt[8] = pCount;
+		castInt[9] = hCount;
+
+		castInt[10] = pSize;
+		castInt[11] = hSize;
+		castInt[12] = flagSize;
+
+		if (mi->km)
+			castInt[13] = 1; //给km做个标记
+		else
+			castInt[13] = 0;
+	}
+	MPI_Bcast(castInt, 14, MPI_LONG, 0, MPI_COMM_WORLD);
+
+	if (rank != 0)
+	{
+		//把mi的值变量接收
+		mi = (mm_idx_t *)calloc(1, sizeof(mm_idx_t));
+		mi->b = castInt[0];
+		mi->w = castInt[1];
+		mi->k = castInt[2];
+		mi->flag = castInt[3];
+		mi->n_seq = castInt[4];
+		mi->index = castInt[5];
+		mi->n_alt = castInt[6];
+        
+		mib = 1U << mi->b;
+
+		nSeq = mi->n_seq;
+		sum_len = castInt[7];
+
+		pCount = castInt[8];
+		hCount = castInt[9];
+		pSize = castInt[10];
+		hSize = castInt[11];
+		flagSize = castInt[12];
+
+		if (castInt[13])
+			mi->km = 1;
+
+		mi->seq = (mm_idx_seq_t *)calloc(nSeq, sizeof(mm_idx_seq_t));
+		mi->B = (mm_idx_bucket_t *)calloc(mib, sizeof(mm_idx_bucket_t));
+	}
+
+	//所有进程申请数组空间
+	seqName = (char *)calloc(nSeq * SEQ_NAME_LEN, sizeof(char)); //参考序列的名字,最多为100
+	seqOffset = (uint64_t *)calloc(nSeq, sizeof(uint64_t));
+	seqLen = (uint32_t *)calloc(nSeq, sizeof(uint32_t));
+	castS = (uint32_t *)calloc(sum_len, sizeof(uint32_t));
+
+	pst = (int *)calloc(pCount, sizeof(int));
+	hst = (int *)calloc(hCount, sizeof(int));
+	miBn = (int32_t *)calloc(pCount, sizeof(int32_t));
+	miBp = (uint64_t *)calloc(pSize, sizeof(uint64_t));
+
+	miBhCon = (int(*)[4])calloc(hCount * 4, sizeof(int)); //记录值变量
+	miBhHash = (uint64_t(*)[2])calloc(hSize * 2, sizeof(uint64_t));
+	flagSt = (int(*)[2])calloc(flagSize * 2, sizeof(int));
+	miBhFlags = (khint32_t *)calloc(flagSize, sizeof(khint32_t));
+
+	if (rank == 0)
+	{
+		for (tempI = 0; tempI < nSeq; tempI++)
+		{
+			strcat(seqName, mi->seq[tempI].name);
+			strcat(seqName, ",");
+
+			seqOffset[tempI] = mi->seq[tempI].offset;
+			seqLen[tempI] = mi->seq[tempI].len;
+		}
+
+		for (tempI = 0; tempI < sum_len; tempI++)
+			castS[tempI] = mi->S[tempI];
+
+		idxhash_t *h;
+		pCount = 0;
+		hCount = 0;
+		for (tempI = 0; tempI < mib; tempI++)
+		{
+			h = (idxhash_t *)mi->B[tempI].h;
+			if (mi->B[tempI].n != 0)
+			{
+				pst[pCount] = tempI;
+				pCount++;
+			}
+			if (h == 0)
+				continue;
+			hst[hCount] = tempI;
+			hCount++;
+		}
+
+		tempP = 0;
+		tempH = 0;
+		pSize = 0;
+		hSize = 0;
+		flagSize = 0;
+		for (tempI = 0; tempI < mib; tempI++)
+		{
+			h = (idxhash_t *)mi->B[tempI].h;
+
+			if (mi->B[tempI].n)
+			{
+				miBn[tempP] = mi->B[tempI].n;
+				for (tempJ = 0; tempJ < miBn[tempP]; tempJ++)
+				{
+					miBp[pSize] = mi->B[tempI].p[tempJ];
+					pSize++;
+				}
+				tempP++;
+			}
+
+			if (h == 0)
+				continue;
+			if (h->n_buckets)
+				miBhCon[tempH][0] = h->n_buckets;
+			else
+				miBhCon[tempH][0] = 0;
+			if (h->n_occupied)
+				miBhCon[tempH][1] = h->n_occupied;
+			else
+				miBhCon[tempH][1] = 0;
+			if (h->size)
+				miBhCon[tempH][2] = h->size;
+			else
+				miBhCon[tempH][2] = 0;
+			if (h->upper_bound)
+				miBhCon[tempH][3] = h->upper_bound;
+			else
+				miBhCon[tempH][3] = 0;
+
+			tempF = (h->n_buckets) < 16 ? 1 : (h->n_buckets) >> 4;
+			for (tempJ = 0; tempJ < tempF; tempJ++)
+			{
+				if (h->flags[tempJ])
+				{
+					flagSt[flagSize][0] = tempI;
+					flagSt[flagSize][1] = tempJ;
+					miBhFlags[flagSize] = h->flags[tempJ];
+					flagSize++;
+				}
+			}
+
+			for (tempJ = 0; tempJ < kh_end(h); tempJ++)
+			{ //h指针
+				if (kh_exist(h, tempJ))
+				{
+					if (kh_key(h, tempJ))
+						miBhHash[hSize][0] = kh_key(h, tempJ);
+					else
+						miBhHash[hSize][0] = 0;
+					if (kh_val(h, tempJ))
+						miBhHash[hSize][1] = kh_val(h, tempJ);
+					else
+						miBhHash[hSize][1] = 0;
+
+					hSize++;
+				}
+			}
+			tempH++;
+		}
+	}
+	MPI_Bcast(seqName, nSeq*SEQ_NAME_LEN, MPI_CHAR, 0, MPI_COMM_WORLD);
+	MPI_Bcast(seqOffset, nSeq, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
+    MPI_Bcast(seqLen, nSeq, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+    MPI_Bcast(castS, sum_len, MPI_UNSIGNED, 0, MPI_COMM_WORLD);	
+
+    MPI_Bcast(pst, pCount, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(hst, hCount, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(miBn, pCount, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(miBp, pSize, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
+
+    MPI_Bcast(miBhCon, hCount*4, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(miBhHash, hSize*2, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
+
+	MPI_Bcast(flagSt, flagSize*2, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(miBhFlags, flagSize, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+	if (rank != 0)
+	{
+		char *delim = ",";
+		for (tempI = 0; tempI < nSeq; tempI++)
+		{
+			mi->seq[tempI].name = (char *)calloc(50, sizeof(char));
+			if (tempI == 0)
+			{
+				mi->seq[tempI].name = strtok(seqName, delim);
+			}
+			else
+			{
+				mi->seq[tempI].name = strtok(NULL, delim);
+			}
+			mi->seq[tempI].offset = seqOffset[tempI];
+			mi->seq[tempI].len = seqLen[tempI];
+		}
+
+		mi->S = (uint32_t *)calloc(sum_len, sizeof(uint32_t));
+		for (tempI = 0; tempI < sum_len; tempI++)
+			mi->S[tempI] = castS[tempI];
+
+		tempP = 0;
+		tempH = 0;
+		pSize = 0;
+		hSize = 0;
+		flagSize = 0;
+		for (tempI = 0; tempI < mib; tempI++)
+		{
+			if (tempP < pCount && pst[tempP] == tempI)
+			{ //pst记录的值是顺序记录的，所以只需要累加下标比对即可，不需要遍历数组
+				mi->B[tempI].n = miBn[tempP];
+				mi->B[tempI].p = (uint64_t *)calloc(miBn[tempP], sizeof(uint64_t));
+				for (tempJ = 0; tempJ < miBn[tempP]; tempJ++)
+				{
+					mi->B[tempI].p[tempJ] = miBp[pSize];
+					pSize++;
+				}
+				tempP++;
+			}
+
+			idxhash_t *h = (idxhash_t *)calloc(1, sizeof(idxhash_t));
+			if (tempH < hCount && hst[tempH] == tempI)
+			{
+				h->n_buckets = miBhCon[tempH][0];
+				h->n_occupied = miBhCon[tempH][1];
+				h->size = miBhCon[tempH][2];
+				h->upper_bound = miBhCon[tempH][3];
+
+				h->keys = (uint64_t *)calloc(h->n_buckets, sizeof(uint64_t));
+				h->vals = (uint64_t *)calloc(h->n_buckets, sizeof(uint64_t));
+				h->flags = (khint32_t *)calloc(h->n_buckets, sizeof(khint32_t));
+
+				tempF = (h->n_buckets) < 16 ? 1 : (h->n_buckets) >> 4;
+				for (tempJ = 0; tempJ < tempF; tempJ++)
+				{
+					if (flagSize < castInt[11] && flagSt[flagSize][0] == tempI && flagSt[flagSize][1] == tempJ)
+					{
+						h->flags[tempJ] = miBhFlags[flagSize];
+						flagSize++;
+					}
+					else
+					{
+						h->flags[tempJ] = 0;
+					}
+				}
+
+				for (tempJ = 0; tempJ < kh_end(h); tempJ++)
+				{
+					if (kh_exist(h, tempJ))
+					{
+						h->keys[tempJ] = miBhHash[hSize][0];
+						h->vals[tempJ] = miBhHash[hSize][1];
+
+						hSize++;
+					}
+					else
+					{
+						h->keys[tempJ] = 0;
+						h->vals[tempJ] = 0;
+					}
+				}
+				tempH++;
+			}
+			else
+			{
+				h = 0;
+			}
+			mi->B[tempI].h = h;
+		}
+	}
+	//free中间数组
+	free(seqOffset);
+	free(seqLen);
+	free(castS);
+	free(pst);
+	free(hst);
+	free(miBn);
+	free(miBp);
+	free(miBhCon);
+	free(miBhHash);
+	free(flagSt);
+	free(miBhFlags);
+    return mi;
+}
+
 mm_idx_t *mm_idx_init(int w, int k, int b, int flag)
 {
 	mm_idx_t *mi;
@@ -62,7 +428,14 @@ void mm_idx_destroy(mm_idx_t *mi)
 		for (i = 0; i < 1U<<mi->b; ++i) {
 			free(mi->B[i].p);
 			free(mi->B[i].a.a);
-			kh_destroy(idx, (idxhash_t*)mi->B[i].h);
+			idxhash_t *h = (idxhash_t*)mi->B[i].h;
+			if (h) {					
+			  if(h->keys) free(h->keys);
+			  if(h->flags) free(h->flags);				
+		      if(h->vals) free(h->vals);									
+			  if(h) free(h);												
+		    }
+			//if(mi->B[i].h) kh_destroy(idx, (idxhash_t*)mi->B[i].h);
 		}
 	}
 	if (mi->I) {
@@ -74,7 +447,7 @@ void mm_idx_destroy(mm_idx_t *mi)
 		for (i = 0; i < mi->n_seq; ++i)
 			free(mi->seq[i].name);
 		free(mi->seq);
-	} else km_destroy(mi->km);
+	} //else km_destroy(mi->km);
 	free(mi->B); free(mi->S); free(mi);
 }
 
@@ -376,7 +749,7 @@ mm_idx_t *mm_idx_build(const char *fn, int w, int k, int flag, int n_threads) //
 {
 	mm_bseq_file_t *fp;
 	mm_idx_t *mi;
-	fp = mm_bseq_open(fn);
+	fp = mm_bseq_open(fn,1);
 	if (fp == 0) return 0;
 	mi = mm_idx_gen(fp, w, k, 14, flag, 1<<18, n_threads, UINT64_MAX);
 	mm_bseq_close(fp);
@@ -570,7 +943,7 @@ mm_idx_reader_t *mm_idx_reader_open(const char *fn, const mm_idxopt_t *opt, cons
 	if (r->is_idx) {
 		r->fp.idx = fopen(fn, "rb");
 		r->idx_size = is_idx;
-	} else r->fp.seq = mm_bseq_open(fn);
+	} else r->fp.seq = mm_bseq_open(fn,1);
 	if (fn_out) r->fp_out = fopen(fn_out, "wb");
 	return r;
 }

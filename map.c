@@ -626,7 +626,7 @@ static mm_bseq_file_t **open_bseqs(int n, const char **fn)
 	int i, j;
 	fp = (mm_bseq_file_t**)calloc(n, sizeof(mm_bseq_file_t*));
 	for (i = 0; i < n; ++i) {
-		if ((fp[i] = mm_bseq_open(fn[i])) == 0) {
+		if ((fp[i] = mm_bseq_open(fn[i],2)) == 0) {
 			if (mm_verbose >= 1)
 				fprintf(stderr, "ERROR: failed to open file '%s': %s\n", fn[i], strerror(errno));
 			for (j = 0; j < i; ++j)

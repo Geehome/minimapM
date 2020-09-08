@@ -2,12 +2,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <mpi.h>
 #include "bseq.h"
 #include "minimap.h"
 #include "mmpriv.h"
 #include "ketopt.h"
 
 #define MM_VERSION "2.17-r974-dirty"
+#define FILE_PATH_SIZE 150
 
 #ifdef __linux__
 #include <sys/resource.h>
@@ -70,6 +72,7 @@ static ko_longopt_t long_options[] = {
 	{ "chain-gap-scale",ko_required_argument, 343 },
 	{ "alt",            ko_required_argument, 344 },
 	{ "alt-drop",       ko_required_argument, 345 },
+	{ "fileprefix",     ko_required_argument, 346 },
 	{ "help",           ko_no_argument,       'h' },
 	{ "max-intron-len", ko_required_argument, 'G' },
 	{ "version",        ko_no_argument,       'V' },
@@ -107,12 +110,13 @@ static inline void yes_or_no(mm_mapopt_t *opt, int flag, int long_idx, const cha
 
 int main(int argc, char *argv[])
 {
+    MPI_Init(&argc, &argv);
 	const char *opt_str = "2aSDw:k:K:t:r:f:Vv:g:G:I:d:XT:s:x:Hcp:M:n:z:A:B:O:E:m:N:Qu:R:hF:LC:yYPo:";
 	ketopt_t o = KETOPT_INIT;
 	mm_mapopt_t opt;
 	mm_idxopt_t ipt;
 	int i, c, n_threads = 3, n_parts, old_best_n = -1;
-	char *fnw = 0, *rg = 0, *junc_bed = 0, *s, *alt_list = 0;
+	char *fnw = 0, *rg = 0, *junc_bed = 0, *s, *alt_list = 0,fileprefix[FILE_PATH_SIZE];
 	FILE *fp_help = stderr;
 	mm_idx_reader_t *idx_rdr;
 	mm_idx_t *mi;
@@ -217,6 +221,8 @@ int main(int argc, char *argv[])
 		else if (c == 343) opt.chain_gap_scale = atof(o.arg); // --chain-gap-scale
 		else if (c == 344) alt_list = o.arg; // --alt
 		else if (c == 345) opt.alt_drop = atof(o.arg); // --alt-drop
+		else if (c == 346) strcpy(fileprefix,o.arg);
+
 		else if (c == 314) { // --frag
 			yes_or_no(&opt, MM_F_FRAG_MODE, o.longidx, o.arg, 1);
 		} else if (c == 315) { // --secondary
@@ -256,7 +262,7 @@ int main(int argc, char *argv[])
 			if (*o.arg == 'b') opt.flag |= MM_F_SPLICE_FOR|MM_F_SPLICE_REV; // both strands
 			else if (*o.arg == 'f') opt.flag |= MM_F_SPLICE_FOR, opt.flag &= ~MM_F_SPLICE_REV; // match GT-AG
 			else if (*o.arg == 'r') opt.flag |= MM_F_SPLICE_REV, opt.flag &= ~MM_F_SPLICE_FOR; // match CT-AC (reverse complement of GT-AG)
-			else if (*o.arg == 'n') opt.flag &= ~(MM_F_SPLICE_FOR|MM_F_SPLICE_REV); // don't try to match the GT-AG signal
+			else if (*o.arg == 'n') opt.flag &= ~(MM_F_SPLICE_FOR|MM_F_SPLICE_REV); // dont try to match the GT-AG signal
 			else {
 				fprintf(stderr, "[ERROR]\033[1;31m unrecognized cDNA direction\033[0m\n");
 				return 1;
@@ -289,6 +295,7 @@ int main(int argc, char *argv[])
 		fprintf(fp_help, "Usage: minimap2 [options] <target.fa>|<target.idx> [query.fa] [...]\n");
 		fprintf(fp_help, "Options:\n");
 		fprintf(fp_help, "  Indexing:\n");
+		fprintf(fp_help, "    --fileprefix output path and file name prefix\n");
 		fprintf(fp_help, "    -H           use homopolymer-compressed k-mer (preferrable for PacBio)\n");
 		fprintf(fp_help, "    -k INT       k-mer size (no larger than 28) [%d]\n", ipt.k);
 		fprintf(fp_help, "    -w INT       minimizer window size [%d]\n", ipt.w);
@@ -355,7 +362,27 @@ int main(int argc, char *argv[])
 	}
 	if (opt.best_n == 0 && (opt.flag&MM_F_CIGAR) && mm_verbose >= 2)
 		fprintf(stderr, "[WARNING]\033[1;31m `-N 0' reduces alignment accuracy. Please use --secondary=no to suppress secondary alignments.\033[0m\n");
-	while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
+	
+	
+	int rank=0;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);	
+
+    char charRank[5];
+    sprintf(charRank, "%d", rank);//设置输出文件名
+	strcat(fileprefix,charRank);
+	strcat(fileprefix,".sam");
+    mm_trans_filename(fileprefix); //把输出文件名传到misc.c
+	
+	int mi_flag=1;
+	while (mi_flag) {
+		if(rank==0)	{
+			mi = mm_idx_reader_read(idx_rdr, n_threads);
+			if(mi==0) mi_flag=0;
+		}
+		MPI_Bcast(&mi_flag, 1, MPI_INT, 0, MPI_COMM_WORLD);
+		if(mi_flag) mi=mm_idx_bcast(mi);
+		else break;
+      
 		int ret;
 		if ((opt.flag & MM_F_CIGAR) && (mi->flag & MM_I_NO_SEQ)) {
 			fprintf(stderr, "[ERROR] the prebuilt index doesn't contain sequences.\n");
@@ -420,5 +447,6 @@ int main(int argc, char *argv[])
 			fprintf(stderr, " %s", argv[i]);
 		fprintf(stderr, "\n[M::%s] Real time: %.3f sec; CPU: %.3f sec; Peak RSS: %.3f GB\n", __func__, realtime() - mm_realtime0, cputime(), peakrss() / 1024.0 / 1024.0 / 1024.0);
 	}
+	MPI_Finalize();
 	return 0;
 }

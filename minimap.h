@@ -173,6 +173,13 @@ typedef struct mm_tbuf_s mm_tbuf_t;
 extern int mm_verbose, mm_dbg_flag; // verbose level: 0 for no info, 1 for error, 2 for warning, 3 for message (default); debugging flag
 extern double mm_realtime0; // wall-clock timer
 
+
+/**
+ * Broadcast minimap2 index
+ * @param mi         minimap2 index
+ */
+mm_idx_t * mm_idx_bcast(mm_idx_t *mi);
+
 /**
  * Set default or preset parameters
  *

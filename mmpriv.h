@@ -90,6 +90,7 @@ mm_idx_t *mm_split_merge_prep(const char *prefix, int n_splits, FILE **fp, uint3
 int mm_split_merge(int n_segs, const char **fn, const mm_mapopt_t *opt, int n_split_idx);
 void mm_split_rm_tmp(const char *prefix, int n_splits);
 
+void mm_trans_filename(char *filePre);
 void mm_err_puts(const char *str);
 void mm_err_fwrite(const void *p, size_t size, size_t nitems, FILE *fp);
 void mm_err_fread(void *p, size_t size, size_t nitems, FILE *fp);

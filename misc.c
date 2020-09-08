@@ -4,6 +4,7 @@
 int mm_verbose = 1;
 int mm_dbg_flag = 0;
 double mm_realtime0;
+char *filename="";
 
 #if defined(WIN32) || defined(_WIN32)
 #include <windows.h>
@@ -120,14 +121,21 @@ double realtime(void)
 	return tp.tv_sec + tp.tv_usec * 1e-6;
 }
 
+void mm_trans_filename(char *filePre)
+{
+    filename=filePre;
+}
 void mm_err_puts(const char *str)
 {
 	int ret;
+	if(freopen(filename, "a", stdout) == NULL)
+        fprintf(stderr,"error redirecting stdout\n");
 	ret = puts(str);
 	if (ret == EOF) {
-		perror("[ERROR] failed to write the results");
+		fprintf(stderr, "[ERROR] failed to write the results\n");
 		exit(EXIT_FAILURE);
 	}
+	fclose(stdout);
 }
 
 void mm_err_fwrite(const void *p, size_t size, size_t nitems, FILE *fp)

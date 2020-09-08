@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <sys/stat.h>
+#include <mpi.h>
 #define __STDC_LIMIT_MACROS
 #include "bseq.h"
 #include "kvec.h"
@@ -33,17 +35,101 @@ struct mm_bseq_file_s {
 	gzFile fp;
 	kseq_t *ks;
 	mm_bseq1_t s;
+	long long int pos, endPos;
 };
 
-mm_bseq_file_t *mm_bseq_open(const char *fn)
+void setPos(mm_bseq_file_t *bs, long long int pos) {
+       bs->pos = pos;
+       gzseek(bs->ks->f->f, bs->pos, SEEK_SET);
+       ks_rewind(bs->ks->f);
+	  
+}
+long long int getPos(mm_bseq_file_t *bs) {
+        return gztell(bs->ks->f->f) - bs->ks->f->end + bs->ks->f->begin;
+	
+}
+long long int fsize(const char *fn) {
+    struct stat st;
+
+    if (stat(fn, &st) == 0)
+        return st.st_size;
+
+    return -1;
+}
+
+void skipToNextRecord(mm_bseq_file_t *bs) {
+       kstring_t buf;
+       buf.l = buf.m = 0;
+       buf.s = NULL;
+       int dret;
+       char c;
+       long long int possiblePos = -1;
+        
+       while (possiblePos < 0) {
+               ks_getuntil(bs->ks->f, '\n', &buf, &dret);
+               c = ks_getc(bs->ks->f);
+               if (c == '>' || c == '@') {
+                       possiblePos = getPos(bs) -1;
+                       // > and @ are valid quality characters, check the next line for header
+                       ks_getuntil(bs->ks->f, '\n', &buf, &dret);
+                       c = ks_getc(bs->ks->f);
+                       if (c == '>' || c == '@')
+                               possiblePos = getPos(bs) -1;
+               }
+       }
+       setPos(bs, possiblePos);
+       if (buf.s)
+               free(buf.s);
+}
+
+void sharePositions (mm_bseq_file_t *bs) {
+       int rank, size;
+       MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+       MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+       // communicate with neighbor ranks to determine end positions
+       MPI_Request request;
+       if (rank != 0) {
+               MPI_Isend(&bs->pos, 1, MPI_LONG_LONG_INT, rank-1, 0, MPI_COMM_WORLD, &request);    
+       }
+    
+       if (rank != (size-1)) {
+               MPI_Recv(&bs->endPos, 1, MPI_LONG_LONG_INT, rank+1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+       }
+      if (rank != 0){
+           MPI_Wait(&request, MPI_STATUS_IGNORE);
+      }
+}
+
+mm_bseq_file_t *mm_bseq_open(const char *fn,int flag)
 {
 	mm_bseq_file_t *fp;
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+  
 	gzFile f;
 	f = fn && strcmp(fn, "-")? gzopen(fn, "r") : gzdopen(0, "r");
 	if (f == 0) return 0;
 	fp = (mm_bseq_file_t*)calloc(1, sizeof(mm_bseq_file_t));
 	fp->fp = f;
 	fp->ks = kseq_init(fp->fp);
+ 
+    if(flag==2){
+        long long int fileSize = fsize(fn);
+        setPos(fp, rank * (fileSize/size));
+	    fp->endPos = (rank == (size-1)) ? fsize(fn) : (rank+1) * (fileSize/size);
+
+        if (rank != 0){
+              skipToNextRecord(fp);
+         }
+     	 fprintf(stderr, "Proc %d: [bwa_seq_open] seeked to %lld in %s\n", rank, fp->pos, fn);
+         sharePositions(fp);
+	}else{
+         fp->pos =0;
+         fp->endPos =50000000000L;
+    }
+    
 	return fp;
 }
 
@@ -91,6 +177,8 @@ mm_bseq1_t *mm_bseq_read3(mm_bseq_file_t *fp, int64_t chunk_size, int with_qual,
 		memset(&fp->s, 0, sizeof(mm_bseq1_t));
 	}
 	while ((ret = kseq_read(ks)) >= 0) {
+		if (getPos(fp) >( fp->endPos+1)) break;    //endPos需要加上1，不然最后一段刚好读不进去
+		
 		mm_bseq1_t *s;
 		assert(ks->seq.l <= INT32_MAX);
 		if (a.m == 0) kv_resize(mm_bseq1_t, 0, a, 256);
