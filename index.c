@@ -184,6 +184,13 @@ mm_idx_t * mm_idx_bcast(mm_idx_t *mi)
 	flagSt = (int(*)[2])calloc(flagSize * 2, sizeof(int));
 	miBhFlags = (khint32_t *)calloc(flagSize, sizeof(khint32_t));
 
+	long long int bsize = nSeq * SEQ_NAME_LEN * sizeof(char) + nSeq * sizeof(uint64_t) + nSeq * sizeof(uint32_t) + sum_len * sizeof(uint32_t);
+	bsize = bsize + pCount * sizeof(int) + hCount * sizeof(int) + pCount * sizeof(int32_t) + pSize * sizeof(uint64_t) + hCount * 4 * sizeof(int) + hSize * 2 * sizeof(uint64_t);
+	bsize = bsize + flagSize * 2 * sizeof(int) + flagSize * sizeof(khint32_t);
+	char *buffer;
+	buffer = (char *)calloc(bsize, sizeof(char));
+	int position = 0;
+
 	if (rank == 0)
 	{
 		for (tempI = 0; tempI < nSeq; tempI++)
@@ -284,25 +291,46 @@ mm_idx_t * mm_idx_bcast(mm_idx_t *mi)
 			}
 			tempH++;
 		}
+
+		MPI_Pack(seqName, nSeq * SEQ_NAME_LEN, MPI_CHAR, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(seqOffset, nSeq, MPI_UNSIGNED_LONG, buffer, bsize, &position, MPI_COMM_WORLD);
+
+		MPI_Pack(seqLen, nSeq, MPI_UNSIGNED, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(castS, sum_len, MPI_UNSIGNED, buffer, bsize, &position, MPI_COMM_WORLD);
+
+		MPI_Pack(pst, pCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(hst, hCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(miBn, pCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(miBp, pSize, MPI_UNSIGNED_LONG, buffer, bsize, &position, MPI_COMM_WORLD);
+
+		MPI_Pack(miBhCon, hCount * 4, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(miBhHash, hSize * 2, MPI_UNSIGNED_LONG, buffer, bsize, &position, MPI_COMM_WORLD);
+
+		MPI_Pack(flagSt, flagSize * 2, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
+		MPI_Pack(miBhFlags, flagSize, MPI_UNSIGNED, buffer, bsize, &position, MPI_COMM_WORLD);
 	}
-	MPI_Bcast(seqName, nSeq*SEQ_NAME_LEN, MPI_CHAR, 0, MPI_COMM_WORLD);
-	MPI_Bcast(seqOffset, nSeq, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
-    MPI_Bcast(seqLen, nSeq, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
-    MPI_Bcast(castS, sum_len, MPI_UNSIGNED, 0, MPI_COMM_WORLD);	
-
-    MPI_Bcast(pst, pCount, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(hst, hCount, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(miBn, pCount, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(miBp, pSize, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
-
-    MPI_Bcast(miBhCon, hCount*4, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Bcast(miBhHash, hSize*2, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
-
-	MPI_Bcast(flagSt, flagSize*2, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(miBhFlags, flagSize, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+	MPI_Bcast(buffer, bsize, MPI_PACKED, 0, MPI_COMM_WORLD);
 
 	if (rank != 0)
 	{
+		MPI_Unpack(buffer, bsize, &position, seqName, nSeq * SEQ_NAME_LEN, MPI_CHAR, MPI_COMM_WORLD);
+		MPI_Unpack(buffer, bsize, &position, seqOffset, nSeq, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
+
+		MPI_Unpack(buffer, bsize, &position, seqLen, nSeq, MPI_UNSIGNED, MPI_COMM_WORLD);
+		MPI_Unpack(buffer, bsize, &position, castS, sum_len, MPI_UNSIGNED, MPI_COMM_WORLD);
+
+		MPI_Unpack(buffer, bsize, &position, pst, pCount, MPI_INT, MPI_COMM_WORLD);
+		MPI_Unpack(buffer, bsize, &position, hst, hCount, MPI_INT, MPI_COMM_WORLD);
+
+		MPI_Unpack(buffer, bsize, &position, miBn, pCount, MPI_INT, MPI_COMM_WORLD);
+		MPI_Unpack(buffer, bsize, &position, miBp, pSize, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
+
+		MPI_Unpack(buffer, bsize, &position, miBhCon, hCount * 4, MPI_INT, MPI_COMM_WORLD);
+		MPI_Unpack(buffer, bsize, &position, miBhHash, hSize * 2, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
+
+		MPI_Unpack(buffer, bsize, &position, flagSt, flagSize * 2, MPI_INT, MPI_COMM_WORLD);
+		MPI_Unpack(buffer, bsize, &position, miBhFlags, flagSize, MPI_UNSIGNED, MPI_COMM_WORLD);
+
 		char *delim = ",";
 		for (tempI = 0; tempI < nSeq; tempI++)
 		{
@@ -393,6 +421,7 @@ mm_idx_t * mm_idx_bcast(mm_idx_t *mi)
 		}
 	}
 	//free中间数组
+	free(buffer);
 	free(seqOffset);
 	free(seqLen);
 	free(castS);
