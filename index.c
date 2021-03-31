@@ -296,37 +296,34 @@ mm_idx_t * mm_idx_bcast(mm_idx_t *mi)
 		MPI_Pack(seqOffset, nSeq, MPI_UNSIGNED_LONG, buffer, bsize, &position, MPI_COMM_WORLD);
 
 		MPI_Pack(seqLen, nSeq, MPI_UNSIGNED, buffer, bsize, &position, MPI_COMM_WORLD);
-		MPI_Pack(castS, sum_len, MPI_UNSIGNED, buffer, bsize, &position, MPI_COMM_WORLD);
 
 		MPI_Pack(pst, pCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
 		MPI_Pack(hst, hCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
-		MPI_Pack(miBn, pCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
-		MPI_Pack(miBp, pSize, MPI_UNSIGNED_LONG, buffer, bsize, &position, MPI_COMM_WORLD);
 
+		MPI_Pack(miBn, pCount, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
 		MPI_Pack(miBhCon, hCount * 4, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
-		MPI_Pack(miBhHash, hSize * 2, MPI_UNSIGNED_LONG, buffer, bsize, &position, MPI_COMM_WORLD);
 
 		MPI_Pack(flagSt, flagSize * 2, MPI_INT, buffer, bsize, &position, MPI_COMM_WORLD);
 		MPI_Pack(miBhFlags, flagSize, MPI_UNSIGNED, buffer, bsize, &position, MPI_COMM_WORLD);
 	}
 	MPI_Bcast(buffer, bsize, MPI_PACKED, 0, MPI_COMM_WORLD);
-
+        MPI_Bcast(castS, sum_len, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+        MPI_Bcast(miBp, pSize, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
+        MPI_Bcast(miBhHash, hSize*2, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
+  
 	if (rank != 0)
 	{
+    
 		MPI_Unpack(buffer, bsize, &position, seqName, nSeq * SEQ_NAME_LEN, MPI_CHAR, MPI_COMM_WORLD);
 		MPI_Unpack(buffer, bsize, &position, seqOffset, nSeq, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
 
 		MPI_Unpack(buffer, bsize, &position, seqLen, nSeq, MPI_UNSIGNED, MPI_COMM_WORLD);
-		MPI_Unpack(buffer, bsize, &position, castS, sum_len, MPI_UNSIGNED, MPI_COMM_WORLD);
 
 		MPI_Unpack(buffer, bsize, &position, pst, pCount, MPI_INT, MPI_COMM_WORLD);
 		MPI_Unpack(buffer, bsize, &position, hst, hCount, MPI_INT, MPI_COMM_WORLD);
 
 		MPI_Unpack(buffer, bsize, &position, miBn, pCount, MPI_INT, MPI_COMM_WORLD);
-		MPI_Unpack(buffer, bsize, &position, miBp, pSize, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
-
 		MPI_Unpack(buffer, bsize, &position, miBhCon, hCount * 4, MPI_INT, MPI_COMM_WORLD);
-		MPI_Unpack(buffer, bsize, &position, miBhHash, hSize * 2, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
 
 		MPI_Unpack(buffer, bsize, &position, flagSt, flagSize * 2, MPI_INT, MPI_COMM_WORLD);
 		MPI_Unpack(buffer, bsize, &position, miBhFlags, flagSize, MPI_UNSIGNED, MPI_COMM_WORLD);
