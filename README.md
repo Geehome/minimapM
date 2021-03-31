@@ -11,10 +11,13 @@ git clone https://github.com/Geehome/minimapM
 cd minimapM && make
 mpirun -n 2 ./minimap2 -a -t 1 --fileprefix=./output/fileprefix_ test/MT-human.fa test/MT-orang.fa
 
--n is node. -t is thread. 
+-n is node. 
+-t is thread. 
 --fileprefix specifies the prefix name of the output file. The output file is in the output directory. 
 Each process outputs a file, and the process number is used as the suffix of the output file.
 You can use Linux commands to merge output files($cat fileprefix_1.sam fileprefix_2.sam > file.sam).
+
+Other commands of minimapM refer to minimap2.
 ```
 
 ## Minimap2
