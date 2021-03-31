@@ -2,6 +2,20 @@
 [![BioConda Install](https://img.shields.io/conda/dn/bioconda/minimap2.svg?style=flag&label=BioConda%20install)](https://anaconda.org/bioconda/minimap2)
 [![PyPI](https://img.shields.io/pypi/v/mappy.svg?style=flat)](https://pypi.python.org/pypi/mappy)
 [![Build Status](https://travis-ci.org/lh3/minimap2.svg?branch=master)](https://travis-ci.org/lh3/minimap2)
+## MinimapM
+## <a name="uguide"></a>Users' Guide
+MinimapM is a multi-level parallel long read alignment tool based on minimap2, a popular third-generation read aligner. MinimapM can utilize the power of multiple computing nodes, that significantly accelerates alignment speed without sacrificing sensitivity. We tested minimapM on 64 nodes, and got 40 speedup and 62.5% parallel efficiency.
+
+```sh
+git clone https://github.com/Geehome/minimapM
+cd minimapM && make
+mpirun -n 2 ./minimap2 -a -t 1 --fileprefix=./output/fileprefix_ test/MT-human.fa test/MT-orang.fa
+
+-n is node. -t is thread. 
+--fileprefix specifies the prefix name of the output file. The output file is in the output directory. Each process outputs a file, and the process number is used as the suffix of the output file. You can use Linux commands to merge output files($cat fileprefix_1.sam fileprefix_2.sam > file.sam).
+```
+
+## Minimap2
 ## <a name="started"></a>Getting Started
 ```sh
 git clone https://github.com/lh3/minimap2
